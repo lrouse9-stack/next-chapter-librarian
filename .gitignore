@@ -1,0 +1,24 @@
+# Secrets & API Keys (CRITICAL)
+.env
+*.env
+api_keys.txt
+
+# Python (Backend)
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+.venv/
+env/
+.pytest_cache/
+
+# Node.js (Frontend)
+node_modules/
+dist/
+dist-ssr
+*.local
+
+# Docker & OS
+.DS_Store
+Thumbs.db
+*.log
