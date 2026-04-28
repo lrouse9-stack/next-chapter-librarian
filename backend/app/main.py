@@ -6,7 +6,7 @@ from typing import Any
 import httpx
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from openai import OpenAI
+from groq import Groq
 from pydantic import BaseModel
 from sqlalchemy import DateTime, Integer, Text, create_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column
@@ -16,7 +16,7 @@ OPEN_LIBRARY_SEARCH_URL = "https://openlibrary.org/search.json"
 DATABASE_URL = os.getenv(
     "DATABASE_URL", "postgresql://postgres:postgres@postgres:5432/librarian"
 )
-OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
 
 
 class Base(DeclarativeBase):
@@ -40,7 +40,7 @@ Base.metadata.create_all(bind=engine)
 app = FastAPI(title="The Next Chapter Librarian API")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -48,42 +48,25 @@ app.add_middleware(
 
 
 class RecommendRequest(BaseModel):
-    query: str
-
-
-def _normalize_first_sentence(doc: dict[str, Any]) -> str:
-    first_sentence = doc.get("first_sentence")
-    if isinstance(first_sentence, str):
-        return first_sentence
-    if isinstance(first_sentence, list) and first_sentence:
-        first = first_sentence[0]
-        if isinstance(first, str):
-            return first
-        if isinstance(first, dict) and "value" in first:
-            return str(first["value"])
-    if isinstance(first_sentence, dict) and "value" in first_sentence:
-        return str(first_sentence["value"])
-    return "No first sentence/description available."
+    mood: str
 
 
 async def search_open_library(mood: str) -> list[dict[str, str]]:
-    params = {"q": mood, "limit": 10}
+    params = {"q": mood, "limit": 8}
     async with httpx.AsyncClient(timeout=15) as client:
         response = await client.get(OPEN_LIBRARY_SEARCH_URL, params=params)
         response.raise_for_status()
         payload = response.json()
 
     books: list[dict[str, str]] = []
-    for doc in payload.get("docs", [])[:10]:
+    for doc in payload.get("docs", [])[:8]:
         title = str(doc.get("title", "Unknown Title"))
         authors = doc.get("author_name") or ["Unknown Author"]
         author = ", ".join([str(a) for a in authors[:2]])
-        first_sentence = _normalize_first_sentence(doc)
         books.append(
             {
                 "title": title,
                 "author": author,
-                "description": first_sentence,
             }
         )
     return books
@@ -91,42 +74,74 @@ async def search_open_library(mood: str) -> list[dict[str, str]]:
 
 def _extract_json(raw_text: str) -> dict[str, Any]:
     cleaned = raw_text.strip()
-    if cleaned.startswith("```"):
-        cleaned = cleaned.strip("`")
-        if cleaned.startswith("json"):
-            cleaned = cleaned[4:].strip()
-    return json.loads(cleaned)
+    # First try direct JSON parse.
+    try:
+        return json.loads(cleaned)
+    except json.JSONDecodeError:
+        pass
+
+    # Remove markdown code fences if present.
+    if "```" in cleaned:
+        cleaned = cleaned.replace("```json", "").replace("```", "").strip()
+        try:
+            return json.loads(cleaned)
+        except json.JSONDecodeError:
+            pass
+
+    # Fallback: extract the first JSON object block from conversational filler.
+    start = cleaned.find("{")
+    end = cleaned.rfind("}")
+    if start != -1 and end != -1 and end > start:
+        return json.loads(cleaned[start : end + 1])
+
+    raise json.JSONDecodeError("No JSON object found in model output.", cleaned, 0)
 
 
 def rank_books_with_ai(mood: str, books: list[dict[str, str]]) -> list[dict[str, str]]:
-    if not os.getenv("OPENAI_API_KEY"):
-        raise HTTPException(
-            status_code=500,
-            detail="OPENAI_API_KEY is missing. Set it in backend environment.",
-        )
+    api_key = os.getenv("GROQ_API_KEY")
+    if not api_key:
+        print("ERROR: GROQ_API_KEY is missing from environment!")
+        return []
 
-    client = OpenAI()
+    # Force the base_url to the bare minimum to prevent double-prefixing
+    client = Groq(
+        api_key=api_key,
+        base_url="https://api.groq.com" 
+    )
     prompt = (
-        "You are a cozy librarian. Based on the user's mood and this list of real books, "
-        "pick the 3 best matches and write a 2-sentence Librarian's Note for each.\n\n"
+        "You are a cozy librarian. Based on these search results and the user's mood, "
+        "pick the best 3 books. For each, write a 2-sentence Librarian's Note "
+        "explaining why it matches their feeling.\n\n"
         f"User mood: {mood}\n\n"
-        "Books:\n"
+        "Search results (real books):\n"
         f"{json.dumps(books, indent=2)}\n\n"
         "Return ONLY valid JSON with this exact shape:\n"
         '{"picks":[{"title":"...","author":"...","librarians_note":"..."}]}'
     )
 
-    completion = client.chat.completions.create(
-        model=OPENAI_MODEL,
-        temperature=0.7,
-        messages=[
-            {
-                "role": "system",
-                "content": "You are a warm, thoughtful librarian assistant.",
-            },
-            {"role": "user", "content": prompt},
-        ],
-    )
+    try:
+        completion = client.chat.completions.create(
+            model=GROQ_MODEL,
+            temperature=0.7,
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "You are a world-class librarian with the soul of a poet. "
+                        "Use sophisticated, cozy language. Do not just list facts; "
+                        "tell the user why this book will heal their heart or ignite "
+                        "their imagination."
+                    ),
+                },
+                {"role": "user", "content": prompt},
+            ],
+        )
+    except Exception as e:
+        print(f"Groq Error: {str(e)}")
+        raise HTTPException(
+            status_code=502,
+            detail="Groq request failed while generating recommendations.",
+        ) from e
     content = completion.choices[0].message.content or ""
 
     try:
@@ -134,7 +149,7 @@ def rank_books_with_ai(mood: str, books: list[dict[str, str]]) -> list[dict[str,
     except json.JSONDecodeError as exc:
         raise HTTPException(
             status_code=502,
-            detail="OpenAI returned non-JSON output; try again.",
+            detail="Groq returned non-JSON output; try again.",
         ) from exc
 
     picks = parsed.get("picks", [])
@@ -157,9 +172,10 @@ def health_check() -> dict[str, str]:
 
 @app.post("/recommend")
 async def recommend_books(payload: RecommendRequest) -> dict[str, Any]:
-    mood = payload.query.strip()
+    mood = payload.mood.strip()
     if not mood:
-        raise HTTPException(status_code=400, detail="Query cannot be empty.")
+        raise HTTPException(status_code=400, detail="Mood cannot be empty.")
+    print(f"Mood: {mood}")
 
     try:
         books = await search_open_library(mood)
@@ -168,15 +184,34 @@ async def recommend_books(payload: RecommendRequest) -> dict[str, Any]:
             status_code=502,
             detail=f"Open Library request failed: {exc}",
         ) from exc
+    print(f"Books found: {len(books)}")
 
     if not books:
-        return {"query": mood, "recommendations": [], "message": "No books found."}
+        return {
+            "mood": mood,
+            "recommendations": [],
+            "message": "I could not find books for that mood yet. Try a different feeling.",
+        }
 
-    picks = rank_books_with_ai(mood, books)
+    try:
+        picks = rank_books_with_ai(mood, books)
+    except HTTPException as exc:
+        return {
+            "mood": mood,
+            "recommendations": [],
+            "message": f"Recommendation engine error: {exc.detail}",
+        }
+    except Exception as exc:
+        return {
+            "mood": mood,
+            "recommendations": [],
+            "message": f"Recommendation engine failed unexpectedly: {exc}",
+        }
+
     log_recommendation(mood, picks)
 
     return {
-        "query": mood,
+        "mood": mood,
         "recommendations": picks,
         "source_count": len(books),
     }

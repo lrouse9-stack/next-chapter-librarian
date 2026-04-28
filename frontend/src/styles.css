@@ -41,12 +41,51 @@ body {
   padding: 1rem;
 }
 
+.loading {
+  color: #6b4f2a;
+  font-style: italic;
+}
+
 .error {
   color: #b91c1c;
 }
 
-pre {
+.results-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 1rem;
+}
+
+.book-card {
+  border: 1px solid #e5e7eb;
+  border-radius: 12px;
+  padding: 0.9rem;
+  background: #fff;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+}
+
+.book-card h3 {
+  margin: 0 0 0.35rem;
+}
+
+.book-author {
+  margin: 0 0 0.75rem;
+  color: #4b5563;
+}
+
+.librarian-note-box {
+  background: #fffbeb;
+  border-left: 4px solid #f59e0b;
+  border-radius: 8px;
+  padding: 0.75rem;
+}
+
+.librarian-note-title {
+  margin: 0 0 0.35rem;
+  font-weight: 700;
+  color: #92400e;
+}
+
+.librarian-note-box p {
   margin: 0;
-  white-space: pre-wrap;
-  word-break: break-word;
 }

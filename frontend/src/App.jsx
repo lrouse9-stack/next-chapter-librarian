@@ -1,23 +1,24 @@
 import { useState } from "react";
 
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "http://localhost:8000";
+const API_BASE_URL = "http://localhost:8000";
 
 export default function App() {
-  const [query, setQuery] = useState("");
+  const [mood, setMood] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
-  const [result, setResult] = useState(null);
+  const [recommendations, setRecommendations] = useState([]);
 
   async function handleSubmit(event) {
     event.preventDefault();
     setLoading(true);
     setError("");
+    setRecommendations([]);
 
     try {
       const response = await fetch(`${API_BASE_URL}/recommend`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ query }),
+        body: JSON.stringify({ mood }),
       });
 
       if (!response.ok) {
@@ -25,10 +26,12 @@ export default function App() {
       }
 
       const data = await response.json();
-      setResult(data);
+      console.log("Received data:", data);
+      const recs = Array.isArray(data.recommendations) ? data.recommendations : [];
+      setRecommendations(recs);
     } catch (err) {
       setError("Could not fetch recommendations.");
-      setResult(null);
+      setRecommendations([]);
     } finally {
       setLoading(false);
     }
@@ -42,21 +45,37 @@ export default function App() {
       <form onSubmit={handleSubmit} className="search-form">
         <input
           type="text"
-          value={query}
-          onChange={(event) => setQuery(event.target.value)}
-          placeholder="I liked a fast-paced mystery with strong characters..."
+          value={mood}
+          onChange={(event) => setMood(event.target.value)}
+          placeholder="What mood are you in today?"
           required
         />
         <button type="submit" disabled={loading}>
-          {loading ? "Searching..." : "Recommend"}
+          {loading ? "Consulting..." : "Recommend"}
         </button>
       </form>
 
       <section className="results">
         <h2>Results</h2>
         {error && <p className="error">{error}</p>}
-        {!error && !result && <p>No recommendations yet.</p>}
-        {result && <pre>{JSON.stringify(result, null, 2)}</pre>}
+        {loading && <p className="loading">Consulting the card catalog...</p>}
+        {!loading && !error && recommendations.length === 0 && (
+          <p>No recommendations yet.</p>
+        )}
+        {!loading && recommendations.length > 0 && (
+          <div className="results-grid">
+            {recommendations.map((book, index) => (
+              <article className="book-card" key={`${book.title}-${index}`}>
+                <h3>{book.title}</h3>
+                <p className="book-author">by {book.author}</p>
+                <div className="librarian-note-box">
+                  <p className="librarian-note-title">Librarian's Note</p>
+                  <p>{book.librarians_note}</p>
+                </div>
+              </article>
+            ))}
+          </div>
+        )}
       </section>
     </main>
   );
